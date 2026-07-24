@@ -76,6 +76,12 @@ class GetMedicalHistorySummaryRequest(BaseModel):
     consent: Literal[True]
 
 
+class QueryReportRecordsRequest(BaseModel):
+    patient_id: str = Field(min_length=1, max_length=64)
+    date_from: date
+    date_to: date
+
+
 class CancelAppointmentRequest(BaseModel):
     patient_id: str = Field(min_length=1, max_length=64)
     appointment_id: str = Field(min_length=1, max_length=128)
@@ -283,6 +289,87 @@ async def get_medical_history_summary(
             "patient_id": request.patient_id,
             "has_history": history is not None,
             "history": history,
+        },
+    }
+
+
+@app.post(
+    "/api/v1/reports/query",
+    dependencies=[Depends(verify_api_key)],
+)
+async def query_report_records(
+    request: QueryReportRecordsRequest,
+) -> dict[str, object]:
+    if request.date_from > request.date_to:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="date_from must be earlier than or equal to date_to.",
+        )
+    if (request.date_to - request.date_from).days > 90:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The report query date range cannot exceed 90 days.",
+        )
+
+    try:
+        connection = get_connection()
+        try:
+            patient = connection.execute(
+                """
+                SELECT patient_id, name_masked, relationship
+                FROM patients
+                WHERE patient_id = ? AND is_active = 1
+                """,
+                (request.patient_id,),
+            ).fetchone()
+            if not patient:
+                raise HTTPException(status_code=404, detail="Patient was not found.")
+
+            rows = connection.execute(
+                """
+                SELECT
+                    report_id,
+                    exam_id,
+                    report_type,
+                    exam_date,
+                    report_status,
+                    report_text,
+                    issued_at
+                FROM report_records
+                WHERE patient_id = ?
+                  AND exam_date >= ?
+                  AND exam_date <= ?
+                ORDER BY exam_date DESC, report_id DESC
+                """,
+                (
+                    request.patient_id,
+                    request.date_from.isoformat(),
+                    request.date_to.isoformat(),
+                ),
+            ).fetchall()
+        finally:
+            connection.close()
+    except (FileNotFoundError, sqlite3.DatabaseError) as error:
+        raise HTTPException(status_code=503, detail="Mock database is unavailable.") from error
+
+    reports = []
+    for row in rows:
+        report = dict(row)
+        report["result_available"] = report["report_status"] == "RELEASED"
+        reports.append(report)
+
+    patient_data = dict(patient)
+    return {
+        "Code": 0,
+        "Msg": "success",
+        "Data": {
+            "patient_id": patient_data["patient_id"],
+            "patient_name_masked": patient_data["name_masked"],
+            "relationship": patient_data["relationship"],
+            "date_from": request.date_from.isoformat(),
+            "date_to": request.date_to.isoformat(),
+            "total": len(reports),
+            "reports": reports,
         },
     }
 

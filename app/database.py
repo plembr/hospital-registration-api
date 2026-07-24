@@ -28,6 +28,30 @@ def get_connection() -> sqlite3.Connection:
 def _apply_migrations(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
+        CREATE TABLE IF NOT EXISTS report_records (
+            report_id TEXT PRIMARY KEY,
+            exam_id TEXT NOT NULL UNIQUE,
+            patient_id TEXT NOT NULL,
+            report_type TEXT NOT NULL,
+            exam_date TEXT NOT NULL,
+            report_status TEXT NOT NULL
+                CHECK (report_status IN ('RELEASED', 'PENDING')),
+            report_text TEXT NOT NULL DEFAULT '',
+            issued_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_report_records_patient_exam_date
+        ON report_records(patient_id, exam_date DESC)
+        """
+    )
+
+    connection.execute(
+        """
         CREATE TABLE IF NOT EXISTS rooms (
             room_id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
